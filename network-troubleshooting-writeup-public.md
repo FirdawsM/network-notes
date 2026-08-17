@@ -44,6 +44,8 @@ Since the gateway responded but nothing beyond it did, the problem was isolated 
 
 ## Fix
 
+### Immediate fix (stop the collision)
+
 ```bash
 # Identify which KVM virtual network owns the conflicting subnet
 sudo virsh net-dumpxml net-wan | grep -A2 "ip address"
@@ -59,11 +61,62 @@ sudo iptables -t nat -L -n -v | grep 192.168.X
 ping -c 4 8.8.8.8
 curl -I https://google.com
 
-# Prevent this network from auto-starting on boot going forward
+# Temporarily prevent this network from auto-starting on boot
 sudo virsh net-autostart net-wan --disable
 ```
 
+This got internet working again immediately, but only by keeping the conflicting lab network turned off — the underlying collision (same subnet used by both the lab and real WiFi) was still there and would recur any time the lab network was started while on that WiFi.
+
+### Permanent fix (eliminate the collision entirely)
+
+Rather than manually remembering to disconnect WiFi or keep the lab network off every time, the subnet itself was reassigned to a range that will never collide with a real-world router:
+
+```bash
+# Edit the virtual network's IP range
+sudo virsh net-edit net-wan
+```
+
+Changed from:
+```xml
+<ip address='192.168.100.1' netmask='255.255.255.0'>
+  <dhcp>
+    <range start='192.168.100.128' end='192.168.100.254'/>
+  </dhcp>
+</ip>
+```
+
+To an unused, non-default range:
+```xml
+<ip address='192.168.99.1' netmask='255.255.255.0'>
+  <dhcp>
+    <range start='192.168.99.128' end='192.168.99.254'/>
+  </dhcp>
+</ip>
+```
+
+```bash
+# Apply the change
+sudo virsh net-start net-wan
+
+# Confirm the new range is active
+sudo virsh net-dumpxml net-wan | grep -A2 "ip address"
+
+# Verified: internet stays up even with the lab network active
+ping -c 4 8.8.8.8
+
+# Safe to re-enable autostart now that the collision is structurally impossible
+sudo virsh net-autostart net-wan
+```
+
+**Result:** confirmed via successful `ping -c 4 8.8.8.8` (0% packet loss) *while the lab network was active* — the two networks no longer overlap, so autostart could be safely re-enabled.
+
+**Note:** The lab's own configuration (its VMs, services, and any pfSense/firewall rules referencing the old `192.168.100.x` range) was not touched by this fix and may need separate updating wherever that old range was hardcoded — this network reassignment only changed the KVM network's IP scheme, not the lab's internal setup.
+
 ---
+
+## Status: Resolved
+
+Both the immediate symptom (no internet) and the root cause (overlapping subnets) are fixed. The lab network can now run alongside real WiFi with autostart re-enabled, with no further conflict expected. Any lab-internal references to the old subnet (e.g. pfSense WAN config) are a separate follow-up, unrelated to host connectivity.
 
 ## Key Lesson
 
